@@ -17,11 +17,12 @@ Each recording session should produce a per-session directory containing:
 
 - `video.mp4`
 - `imu.csv`
+- `frames.csv`
 - `session.json`
 
 The session manifest is the authoritative description of how to interpret the video and sensor log together.
 
-On-device, sessions are written to the app-specific documents area under `capture_sessions/`, so recordings stay local to the application unless you explicitly export them.
+By default, sessions are written to the app-specific documents area under `capture_sessions/`. The app can also persist a user-selected root folder through Android's directory picker and create one session subdirectory per recording there.
 
 ## Repository Map
 
@@ -43,15 +44,15 @@ The initial implementation is expected to follow a single-module Android layout:
 1. Open the repository in Android Studio, or run `./gradlew assembleDebug` locally.
 2. Install the app on an Android 10+ device.
 3. Grant camera permission.
-4. Open Settings to choose the video resolution, target FPS, IMU sampling preset, and an optional session label.
+4. Open Settings to choose the video resolution, target FPS, IMU sampling preset, an optional session label, and the root folder for new captures.
 5. Start a short capture session and stop it when the calibration motion finishes.
-6. Share or inspect the generated session directory containing `video.mp4`, `imu.csv`, and `session.json`.
+6. Share or inspect the generated session directory containing `video.mp4`, `imu.csv`, `frames.csv`, and `session.json`.
 
 ## Scientific Use Notes
 
 This app is designed to create repeatable multimodal datasets for calibration and system-identification work. For robotic-arm experiments, record the device model, mounting geometry, app version, and any external ground-truth or robot-state logs alongside the session output.
 
-Timing is best-effort on commodity Android hardware. Use the recorded monotonic timestamps and manifest metadata for downstream alignment, and verify sample rates, dropped-frame behavior, and mount repeatability on each device class before relying on the data.
+Timing is best-effort on commodity Android hardware. Use the recorded monotonic timestamps, per-frame camera timestamps, and manifest metadata for downstream alignment, and verify sample rates, dropped-frame behavior, and mount repeatability on each device class before relying on the data.
 
 ## Reproducibility Guidance
 

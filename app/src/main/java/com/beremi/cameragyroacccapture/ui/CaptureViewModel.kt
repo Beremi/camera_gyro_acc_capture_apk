@@ -2,12 +2,14 @@ package com.beremi.cameragyroacccapture.ui
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
 import androidx.camera.video.VideoRecordEvent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.camera.view.PreviewView
 import com.beremi.cameragyroacccapture.capture.CameraCaptureManager
+import com.beremi.cameragyroacccapture.capture.FrameTimestampRecorder
 import com.beremi.cameragyroacccapture.sensors.ImuRecorder
 import com.beremi.cameragyroacccapture.session.CameraConfigurationManifest
 import com.beremi.cameragyroacccapture.session.CaptureSettings
@@ -36,6 +38,10 @@ data class CaptureUiState(
     val settings: CaptureSettings = CaptureSettings(),
     val sessionPhase: SessionPhase = SessionPhase.Idle,
     val isSettingsSheetVisible: Boolean = false,
+    val captureRootLabel: String = "",
+    val captureRootDescription: String = "",
+    val isCustomCaptureRoot: Boolean = false,
+    val captureRootTreeUri: Uri? = null,
     val statusMessage: String = "Ready to record a short calibration clip.",
     val errorMessage: String? = null,
     val lastCompletedSession: CompletedSessionSummary? = null,
@@ -49,6 +55,8 @@ private data class ActiveSession(
     var stopRequestedElapsedRealtimeNanos: Long? = null,
     var imuStopElapsedRealtimeNanos: Long? = null,
     var videoFinalizeElapsedRealtimeNanos: Long? = null,
+    var frameCount: Int = 0,
+    val cameraTimestampSource: com.beremi.cameragyroacccapture.session.CameraTimestampSource,
     var sampleCounts: Map<String, Int> = emptyMap(),
     var failureMessage: String? = null,
 )
@@ -63,10 +71,13 @@ class CaptureViewModel private constructor(
     private val stateMachine = SessionStateMachine()
     private val imuRecorder = ImuRecorder(application, clock)
     private val cameraCaptureManager = CameraCaptureManager(application)
+    private val frameTimestampRecorder = FrameTimestampRecorder(sessionStorage)
 
     private var activeSession: ActiveSession? = null
 
-    private val _uiState = MutableStateFlow(CaptureUiState())
+    private val _uiState = MutableStateFlow(
+        CaptureUiState().withCaptureRoot(sessionStorage.currentCaptureRootDetails()),
+    )
     val uiState: StateFlow<CaptureUiState> = _uiState.asStateFlow()
 
     fun onCameraPermissionChanged(granted: Boolean) {
@@ -100,6 +111,33 @@ class CaptureViewModel private constructor(
 
     fun closeSettingsSheet() {
         _uiState.update { it.copy(isSettingsSheetVisible = false) }
+    }
+
+    fun persistCustomCaptureRoot(treeUri: Uri) {
+        runCatching {
+            sessionStorage.persistCustomCaptureRoot(treeUri)
+        }.onSuccess {
+            refreshCaptureRoot()
+            _uiState.update { current ->
+                current.copy(
+                    statusMessage = "Capture root updated. New sessions will use the selected folder.",
+                    errorMessage = null,
+                )
+            }
+        }.onFailure { error ->
+            handleFailure(error.message ?: "Failed to persist the selected capture folder.")
+        }
+    }
+
+    fun clearCustomCaptureRoot() {
+        sessionStorage.clearCustomCaptureRoot()
+        refreshCaptureRoot()
+        _uiState.update { current ->
+            current.copy(
+                statusMessage = "Capture root reset to the app-specific documents folder.",
+                errorMessage = null,
+            )
+        }
     }
 
     fun updateResolutionPreset(resolutionPreset: com.beremi.cameragyroacccapture.session.VideoResolutionPreset) {
@@ -160,13 +198,15 @@ class CaptureViewModel private constructor(
                 )
             }
 
-            val imuStart = imuRecorder.start(artifacts.imuFile, settings.imuSamplingPreset)
+            val imuStart = imuRecorder.start(artifacts.imuArtifact, settings.imuSamplingPreset)
                 .getOrElse { error ->
                     writeFailureManifest(
                         artifacts = artifacts,
                         settings = settings,
                         sensorRegistrationElapsedRealtimeNanos = null,
                         failureMessage = error.message ?: "Failed to start the IMU recorder.",
+                        frameCount = 0,
+                        cameraTimestampSource = cameraCaptureManager.currentTimestampSource(),
                     )
                     handleFailure(error.message ?: "Failed to start the IMU recorder.", artifacts.sessionId)
                     return@launch
@@ -176,10 +216,19 @@ class CaptureViewModel private constructor(
                 artifacts = artifacts,
                 settings = settings,
                 sensorRegistrationElapsedRealtimeNanos = imuStart.sensorRegistrationElapsedRealtimeNanos,
+                cameraTimestampSource = cameraCaptureManager.currentTimestampSource(),
             )
 
-            cameraCaptureManager.startRecording(artifacts.videoFile, ::handleVideoRecordEvent)
-                .onFailure { error ->
+            frameTimestampRecorder.start(
+                artifact = artifacts.framesArtifact,
+                sessionStartElapsedRealtimeNanos = artifacts.monotonicStartElapsedRealtimeNanos,
+                cameraTimestampSource = cameraCaptureManager.currentTimestampSource(),
+            )
+            cameraCaptureManager.setFrameListener(frameTimestampRecorder::onFrame)
+            val videoOutput = runCatching { sessionStorage.prepareVideoOutput(artifacts.videoArtifact) }
+                .getOrElse { error ->
+                    cameraCaptureManager.setFrameListener(null)
+                    activeSession = activeSession?.copy(frameCount = frameTimestampRecorder.stop())
                     val imuStop = imuRecorder.stop()
                     activeSession = activeSession?.copy(
                         imuStopElapsedRealtimeNanos = imuStop.imuStopElapsedRealtimeNanos,
@@ -189,7 +238,32 @@ class CaptureViewModel private constructor(
                         artifacts = artifacts,
                         settings = settings,
                         sensorRegistrationElapsedRealtimeNanos = imuStart.sensorRegistrationElapsedRealtimeNanos,
+                        failureMessage = error.message ?: "Failed to prepare video output.",
+                        frameCount = activeSession?.frameCount ?: 0,
+                        cameraTimestampSource = cameraCaptureManager.currentTimestampSource(),
+                    )
+                    activeSession = null
+                    handleFailure(error.message ?: "Failed to prepare video output.", artifacts.sessionId)
+                    return@launch
+                }
+
+            cameraCaptureManager.startRecording(videoOutput, ::handleVideoRecordEvent)
+                .onFailure { error ->
+                    cameraCaptureManager.setFrameListener(null)
+                    val frameCount = frameTimestampRecorder.stop()
+                    val imuStop = imuRecorder.stop()
+                    activeSession = activeSession?.copy(
+                        imuStopElapsedRealtimeNanos = imuStop.imuStopElapsedRealtimeNanos,
+                        sampleCounts = imuStop.sampleCounts,
+                        frameCount = frameCount,
+                    )
+                    writeFailureManifest(
+                        artifacts = artifacts,
+                        settings = settings,
+                        sensorRegistrationElapsedRealtimeNanos = imuStart.sensorRegistrationElapsedRealtimeNanos,
                         failureMessage = error.message ?: "Failed to start video capture.",
+                        frameCount = frameCount,
+                        cameraTimestampSource = cameraCaptureManager.currentTimestampSource(),
                     )
                     activeSession = null
                     handleFailure(error.message ?: "Failed to start video capture.", artifacts.sessionId)
@@ -284,12 +358,17 @@ class CaptureViewModel private constructor(
 
     private fun finalizeCapture(event: VideoRecordEvent.Finalize) {
         val session = activeSession ?: return
+        cameraCaptureManager.setFrameListener(null)
+        val frameCount = frameTimestampRecorder.stop()
         if (imuRecorder.isActive()) {
             val imuStop = imuRecorder.stop()
             activeSession = session.copy(
                 imuStopElapsedRealtimeNanos = imuStop.imuStopElapsedRealtimeNanos,
                 sampleCounts = imuStop.sampleCounts,
+                frameCount = frameCount,
             )
+        } else {
+            activeSession = session.copy(frameCount = frameCount)
         }
         val latestSession = requireNotNull(activeSession).copy(
             videoFinalizeElapsedRealtimeNanos = clock.elapsedRealtimeNanos(),
@@ -304,15 +383,18 @@ class CaptureViewModel private constructor(
             val manifestStatus = if (event.hasError()) SessionFinalStatus.FAILED else SessionFinalStatus.COMPLETED
             val manifest = buildManifest(latestSession, manifestStatus)
             withContext(Dispatchers.IO) {
-                sessionStorage.writeManifest(manifest, latestSession.artifacts.manifestFile)
+                sessionStorage.writeManifest(manifest, latestSession.artifacts.manifestArtifact)
             }
             if (manifestStatus == SessionFinalStatus.COMPLETED) {
                 val summary = CompletedSessionSummary(
                     sessionId = latestSession.artifacts.sessionId,
-                    sessionDirectory = latestSession.artifacts.sessionDirectory,
-                    videoFile = latestSession.artifacts.videoFile,
-                    imuFile = latestSession.artifacts.imuFile,
-                    manifestFile = latestSession.artifacts.manifestFile,
+                    sessionLocationLabel = latestSession.artifacts.sessionLocationLabel,
+                    shareTargets = listOf(
+                        latestSession.artifacts.videoArtifact,
+                        latestSession.artifacts.imuArtifact,
+                        latestSession.artifacts.framesArtifact,
+                        latestSession.artifacts.manifestArtifact,
+                    ),
                     label = latestSession.settings.sessionLabel.ifBlank { null },
                     completedAt = clock.currentInstant(),
                 )
@@ -348,9 +430,12 @@ class CaptureViewModel private constructor(
         settings: CaptureSettings,
         sensorRegistrationElapsedRealtimeNanos: Long?,
         failureMessage: String,
+        frameCount: Int,
+        cameraTimestampSource: com.beremi.cameragyroacccapture.session.CameraTimestampSource,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val manifest = SessionManifest(
+                schemaVersion = 2,
                 sessionId = artifacts.sessionId,
                 sessionLabel = settings.sessionLabel.ifBlank { null },
                 status = SessionFinalStatus.FAILED,
@@ -362,6 +447,7 @@ class CaptureViewModel private constructor(
                 camera = CameraConfigurationManifest(
                     resolutionPreset = settings.resolutionPreset,
                     targetFramesPerSecond = settings.frameRatePreset.framesPerSecond,
+                    timestampSource = cameraTimestampSource,
                 ),
                 sensors = com.beremi.cameragyroacccapture.session.SensorConfigurationManifest(
                     samplingPreset = settings.imuSamplingPreset,
@@ -369,16 +455,20 @@ class CaptureViewModel private constructor(
                 ),
                 device = DeviceInfoProvider.capture(getApplication()),
                 files = SessionFilesManifest(
-                    videoFileName = artifacts.videoFile.name,
-                    imuFileName = artifacts.imuFile.name,
-                    manifestFileName = artifacts.manifestFile.name,
-                    videoBytes = artifacts.videoFile.takeIf { it.exists() }?.length(),
-                    imuBytes = artifacts.imuFile.takeIf { it.exists() }?.length(),
+                    videoFileName = artifacts.videoArtifact.fileName,
+                    imuFileName = artifacts.imuArtifact.fileName,
+                    framesFileName = artifacts.framesArtifact.fileName,
+                    manifestFileName = artifacts.manifestArtifact.fileName,
+                    videoBytes = sessionStorage.queryLength(artifacts.videoArtifact),
+                    imuBytes = sessionStorage.queryLength(artifacts.imuArtifact),
+                    framesBytes = sessionStorage.queryLength(artifacts.framesArtifact),
                     manifestBytes = null,
                 ),
+                frameCount = frameCount,
+                captureRootDescription = artifacts.captureRootDetails.description,
                 notes = buildNotes(settings),
             )
-            sessionStorage.writeManifest(manifest, artifacts.manifestFile)
+            sessionStorage.writeManifest(manifest, artifacts.manifestArtifact)
         }
     }
 
@@ -387,6 +477,7 @@ class CaptureViewModel private constructor(
         status: SessionFinalStatus,
     ): SessionManifest = withContext(Dispatchers.IO) {
         SessionManifest(
+            schemaVersion = 2,
             sessionId = session.artifacts.sessionId,
             sessionLabel = session.settings.sessionLabel.ifBlank { null },
             status = status,
@@ -402,6 +493,7 @@ class CaptureViewModel private constructor(
             camera = CameraConfigurationManifest(
                 resolutionPreset = session.settings.resolutionPreset,
                 targetFramesPerSecond = session.settings.frameRatePreset.framesPerSecond,
+                timestampSource = session.cameraTimestampSource,
             ),
             sensors = com.beremi.cameragyroacccapture.session.SensorConfigurationManifest(
                 samplingPreset = session.settings.imuSamplingPreset,
@@ -409,14 +501,18 @@ class CaptureViewModel private constructor(
             ),
             device = DeviceInfoProvider.capture(getApplication()),
             files = SessionFilesManifest(
-                videoFileName = session.artifacts.videoFile.name,
-                imuFileName = session.artifacts.imuFile.name,
-                manifestFileName = session.artifacts.manifestFile.name,
-                videoBytes = session.artifacts.videoFile.takeIf { it.exists() }?.length(),
-                imuBytes = session.artifacts.imuFile.takeIf { it.exists() }?.length(),
-                manifestBytes = session.artifacts.manifestFile.takeIf { it.exists() }?.length(),
+                videoFileName = session.artifacts.videoArtifact.fileName,
+                imuFileName = session.artifacts.imuArtifact.fileName,
+                framesFileName = session.artifacts.framesArtifact.fileName,
+                manifestFileName = session.artifacts.manifestArtifact.fileName,
+                videoBytes = sessionStorage.queryLength(session.artifacts.videoArtifact),
+                imuBytes = sessionStorage.queryLength(session.artifacts.imuArtifact),
+                framesBytes = sessionStorage.queryLength(session.artifacts.framesArtifact),
+                manifestBytes = sessionStorage.queryLength(session.artifacts.manifestArtifact),
             ),
             sampleCounts = session.sampleCounts,
+            frameCount = session.frameCount,
+            captureRootDescription = session.artifacts.captureRootDetails.description,
             notes = buildNotes(session.settings),
         )
     }
@@ -442,4 +538,20 @@ class CaptureViewModel private constructor(
             )
         }
     }
+
+    private fun refreshCaptureRoot() {
+        val details = sessionStorage.currentCaptureRootDetails()
+        _uiState.update { current -> current.withCaptureRoot(details) }
+    }
+}
+
+private fun CaptureUiState.withCaptureRoot(
+    details: com.beremi.cameragyroacccapture.storage.CaptureRootDetails,
+): CaptureUiState {
+    return copy(
+        captureRootLabel = details.label,
+        captureRootDescription = details.description,
+        isCustomCaptureRoot = details.isCustom,
+        captureRootTreeUri = details.treeUri,
+    )
 }

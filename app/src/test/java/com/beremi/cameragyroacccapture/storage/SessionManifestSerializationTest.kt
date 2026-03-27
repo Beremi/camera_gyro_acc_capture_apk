@@ -1,6 +1,7 @@
 package com.beremi.cameragyroacccapture.storage
 
 import com.beremi.cameragyroacccapture.session.CameraConfigurationManifest
+import com.beremi.cameragyroacccapture.session.CameraTimestampSource
 import com.beremi.cameragyroacccapture.session.DeviceInfoManifest
 import com.beremi.cameragyroacccapture.session.FrameRatePreset
 import com.beremi.cameragyroacccapture.session.ImuSamplingPreset
@@ -17,6 +18,7 @@ class SessionManifestSerializationTest {
     @Test
     fun `manifest serialization preserves core capture fields`() {
         val manifest = SessionManifest(
+            schemaVersion = 2,
             sessionId = "session_20260327T120000_000Z_deadbeef",
             sessionLabel = "arm-calibration-a",
             status = SessionFinalStatus.COMPLETED,
@@ -31,6 +33,7 @@ class SessionManifestSerializationTest {
             camera = CameraConfigurationManifest(
                 resolutionPreset = VideoResolutionPreset.FHD,
                 targetFramesPerSecond = FrameRatePreset.FPS_30.framesPerSecond,
+                timestampSource = CameraTimestampSource.REALTIME,
             ),
             sensors = SensorConfigurationManifest(
                 samplingPreset = ImuSamplingPreset.GAME,
@@ -50,19 +53,24 @@ class SessionManifestSerializationTest {
             files = SessionFilesManifest(
                 videoFileName = "video.mp4",
                 imuFileName = "imu.csv",
+                framesFileName = "frames.csv",
                 manifestFileName = "session.json",
                 videoBytes = 128L,
                 imuBytes = 256L,
+                framesBytes = 64L,
                 manifestBytes = 512L,
             ),
             sampleCounts = mapOf("accelerometer" to 120, "gyroscope" to 120),
+            frameCount = 230,
+            captureRootDescription = "/storage/emulated/0/Documents/calibration-captures",
         )
 
         val json = Json.encodeToString(SessionManifest.serializer(), manifest)
 
         assertThat(json).contains("\"sessionId\":\"session_20260327T120000_000Z_deadbeef\"")
         assertThat(json).contains("\"videoFileName\":\"video.mp4\"")
+        assertThat(json).contains("\"framesFileName\":\"frames.csv\"")
         assertThat(json).contains("\"samplingPreset\":\"GAME\"")
+        assertThat(json).contains("\"timestampSource\":\"REALTIME\"")
     }
 }
-

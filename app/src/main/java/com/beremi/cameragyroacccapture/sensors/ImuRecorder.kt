@@ -9,10 +9,11 @@ import android.os.Handler
 import android.os.HandlerThread
 import com.beremi.cameragyroacccapture.session.ImuSamplingPreset
 import com.beremi.cameragyroacccapture.session.SensorConfigurationManifest
+import com.beremi.cameragyroacccapture.storage.SessionArtifact
+import com.beremi.cameragyroacccapture.storage.SessionStorage
 import com.beremi.cameragyroacccapture.util.ClockProvider
 import com.beremi.cameragyroacccapture.util.SystemClockProvider
 import java.io.BufferedWriter
-import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -31,6 +32,7 @@ class ImuRecorder(
     private val clock: ClockProvider = SystemClockProvider,
 ) {
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val sessionStorage = SessionStorage(context, clock)
     private val lock = Any()
     private val sampleCounts = ConcurrentHashMap<String, Int>()
 
@@ -65,7 +67,7 @@ class ImuRecorder(
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
 
-    fun start(outputFile: File, preset: ImuSamplingPreset): Result<ImuStartResult> {
+    fun start(outputArtifact: SessionArtifact, preset: ImuSamplingPreset): Result<ImuStartResult> {
         if (active) {
             return Result.failure(IllegalStateException("IMU recorder is already active"))
         }
@@ -76,8 +78,7 @@ class ImuRecorder(
 
         return runCatching {
             sampleCounts.clear()
-            outputFile.parentFile?.mkdirs()
-            writer = outputFile.bufferedWriter().apply {
+            writer = sessionStorage.openBufferedWriter(outputArtifact).apply {
                 write("elapsed_realtime_nanos,sensor_type,x,y,z,accuracy\n")
                 flush()
             }
@@ -117,4 +118,3 @@ class ImuRecorder(
 
     fun isActive(): Boolean = active
 }
-

@@ -10,6 +10,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
@@ -86,6 +87,14 @@ private fun CaptureRoute(viewModel: CaptureViewModel) {
         contract = ActivityResultContracts.RequestPermission(),
         onResult = viewModel::onCameraPermissionChanged,
     )
+    val rootPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+        onResult = { uri ->
+            if (uri != null) {
+                viewModel.persistCustomCaptureRoot(uri)
+            }
+        },
+    )
 
     LaunchedEffect(Unit) {
         val granted = ContextCompat.checkSelfPermission(
@@ -121,6 +130,10 @@ private fun CaptureRoute(viewModel: CaptureViewModel) {
         onFrameRateSelected = viewModel::updateFrameRatePreset,
         onImuSamplingSelected = viewModel::updateImuSamplingPreset,
         onSessionLabelChanged = viewModel::updateSessionLabel,
+        onSelectCaptureRoot = {
+            rootPickerLauncher.launch(uiState.captureRootTreeUri)
+        },
+        onResetCaptureRoot = viewModel::clearCustomCaptureRoot,
         onStartCapture = viewModel::startCapture,
         onStopCapture = { viewModel.stopCapture() },
         onShareLatest = {
@@ -145,6 +158,8 @@ private fun CaptureScreen(
     onFrameRateSelected: (FrameRatePreset) -> Unit,
     onImuSamplingSelected: (ImuSamplingPreset) -> Unit,
     onSessionLabelChanged: (String) -> Unit,
+    onSelectCaptureRoot: () -> Unit,
+    onResetCaptureRoot: () -> Unit,
     onStartCapture: () -> Unit,
     onStopCapture: () -> Unit,
     onShareLatest: () -> Unit,
@@ -209,10 +224,15 @@ private fun CaptureScreen(
             ModalBottomSheet(onDismissRequest = onDismissSettings) {
                 SettingsSheet(
                     settings = uiState.settings,
+                    captureRootLabel = uiState.captureRootLabel,
+                    captureRootDescription = uiState.captureRootDescription,
+                    isCustomCaptureRoot = uiState.isCustomCaptureRoot,
                     onResolutionSelected = onResolutionSelected,
                     onFrameRateSelected = onFrameRateSelected,
                     onImuSamplingSelected = onImuSamplingSelected,
                     onSessionLabelChanged = onSessionLabelChanged,
+                    onSelectCaptureRoot = onSelectCaptureRoot,
+                    onResetCaptureRoot = onResetCaptureRoot,
                     onDismiss = onDismissSettings,
                 )
             }
@@ -385,7 +405,7 @@ private fun ActionRow(
                 }
             }
             Text(
-                text = "Video is stored without audio. IMU capture is raw and uses the device monotonic timeline.",
+                text = "Video is stored without audio. IMU capture is raw, and frame timestamps are logged to frames.csv when recording starts.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -418,7 +438,7 @@ private fun LastSessionCard(
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
             )
             Text(
-                text = summary.sessionDirectory.absolutePath,
+                text = summary.sessionLocationLabel,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.84f),
             )
@@ -444,15 +464,21 @@ private fun LastSessionCard(
 @Composable
 private fun SettingsSheet(
     settings: CaptureSettings,
+    captureRootLabel: String,
+    captureRootDescription: String,
+    isCustomCaptureRoot: Boolean,
     onResolutionSelected: (VideoResolutionPreset) -> Unit,
     onFrameRateSelected: (FrameRatePreset) -> Unit,
     onImuSamplingSelected: (ImuSamplingPreset) -> Unit,
     onSessionLabelChanged: (String) -> Unit,
+    onSelectCaptureRoot: () -> Unit,
+    onResetCaptureRoot: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
@@ -481,6 +507,43 @@ private fun SettingsSheet(
             optionLabel = { it.label },
             onSelected = onImuSamplingSelected,
         )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            ),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Capture root",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = captureRootLabel,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = captureRootDescription,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onClick = onSelectCaptureRoot) {
+                        Text("Choose folder")
+                    }
+                    if (isCustomCaptureRoot) {
+                        TextButton(onClick = onResetCaptureRoot) {
+                            Text("Use app default")
+                        }
+                    }
+                }
+            }
+        }
         OutlinedTextField(
             value = settings.sessionLabel,
             onValueChange = onSessionLabelChanged,
@@ -503,6 +566,7 @@ private fun SettingsSheet(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun <T> ChipGroup(
     title: String,
@@ -516,7 +580,10 @@ private fun <T> ChipGroup(
             text = title,
             style = MaterialTheme.typography.titleMedium,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             options.forEach { option ->
                 FilterChip(
                     selected = option == selected,
@@ -528,4 +595,3 @@ private fun <T> ChipGroup(
         }
     }
 }
-

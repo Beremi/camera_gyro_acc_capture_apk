@@ -16,6 +16,7 @@ class SessionStorageInstrumentedTest {
 
     @After
     fun tearDown() {
+        SessionStorage(context, FakeClockProvider()).clearCustomCaptureRoot()
         createdDirectories.forEach { directory ->
             directory.deleteRecursively()
         }
@@ -26,12 +27,14 @@ class SessionStorageInstrumentedTest {
         val storage = SessionStorage(context, FakeClockProvider())
 
         val artifacts = storage.createSessionArtifacts()
-        createdDirectories += artifacts.sessionDirectory
+        createdDirectories += requireNotNull(artifacts.videoArtifact.file?.parentFile)
 
-        assertThat(artifacts.sessionDirectory.exists()).isTrue()
-        assertThat(artifacts.videoFile.name).isEqualTo("video.mp4")
-        assertThat(artifacts.imuFile.name).isEqualTo("imu.csv")
-        assertThat(artifacts.manifestFile.name).isEqualTo("session.json")
+        assertThat(requireNotNull(artifacts.videoArtifact.file?.parentFile).exists()).isTrue()
+        assertThat(artifacts.videoArtifact.fileName).isEqualTo("video.mp4")
+        assertThat(artifacts.imuArtifact.fileName).isEqualTo("imu.csv")
+        assertThat(artifacts.framesArtifact.fileName).isEqualTo("frames.csv")
+        assertThat(artifacts.manifestArtifact.fileName).isEqualTo("session.json")
+        assertThat(artifacts.captureRootDetails.isCustom).isFalse()
     }
 
     private class FakeClockProvider : com.beremi.cameragyroacccapture.util.ClockProvider {
@@ -40,4 +43,3 @@ class SessionStorageInstrumentedTest {
         override fun elapsedRealtimeNanos(): Long = 42L
     }
 }
-

@@ -1,7 +1,6 @@
 package com.beremi.cameragyroacccapture.session
 
 import com.google.common.truth.Truth.assertThat
-import java.io.File
 import java.time.Instant
 import org.junit.Test
 
@@ -17,10 +16,8 @@ class SessionStateMachineTest {
 
         val summary = CompletedSessionSummary(
             sessionId = "session-1",
-            sessionDirectory = File("session-1"),
-            videoFile = File("video.mp4"),
-            imuFile = File("imu.csv"),
-            manifestFile = File("session.json"),
+            sessionLocationLabel = "/tmp/session-1",
+            shareTargets = emptyList(),
             label = "lab-run",
             completedAt = Instant.parse("2026-03-27T12:00:00Z"),
         )
@@ -36,4 +33,3 @@ class SessionStateMachineTest {
             .isEqualTo(SessionPhase.Failed("camera unavailable", "session-2"))
     }
 }
-

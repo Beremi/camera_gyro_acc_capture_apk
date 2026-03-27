@@ -1,6 +1,6 @@
 package com.beremi.cameragyroacccapture.session
 
-import java.io.File
+import com.beremi.cameragyroacccapture.storage.SessionArtifact
 import java.time.Instant
 import kotlinx.serialization.Serializable
 
@@ -26,10 +26,8 @@ sealed interface SessionPhase {
 
 data class CompletedSessionSummary(
     val sessionId: String,
-    val sessionDirectory: File,
-    val videoFile: File,
-    val imuFile: File,
-    val manifestFile: File,
+    val sessionLocationLabel: String,
+    val shareTargets: List<SessionArtifact>,
     val label: String?,
     val completedAt: Instant,
 )
@@ -41,10 +39,18 @@ enum class SessionFinalStatus {
 }
 
 @Serializable
+enum class CameraTimestampSource {
+    REALTIME,
+    UNKNOWN,
+    UNAVAILABLE,
+}
+
+@Serializable
 data class CameraConfigurationManifest(
     val resolutionPreset: VideoResolutionPreset,
     val targetFramesPerSecond: Int,
     val audioEnabled: Boolean = false,
+    val timestampSource: CameraTimestampSource = CameraTimestampSource.UNAVAILABLE,
 )
 
 @Serializable
@@ -72,9 +78,11 @@ data class DeviceInfoManifest(
 data class SessionFilesManifest(
     val videoFileName: String,
     val imuFileName: String,
+    val framesFileName: String,
     val manifestFileName: String,
     val videoBytes: Long? = null,
     val imuBytes: Long? = null,
+    val framesBytes: Long? = null,
     val manifestBytes: Long? = null,
 )
 
@@ -98,6 +106,7 @@ data class SessionManifest(
     val device: DeviceInfoManifest,
     val files: SessionFilesManifest,
     val sampleCounts: Map<String, Int> = emptyMap(),
+    val frameCount: Int = 0,
+    val captureRootDescription: String? = null,
     val notes: List<String> = emptyList(),
 )
-
